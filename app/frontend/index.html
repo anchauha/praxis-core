@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standards assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="/styles.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="rail">
+    <header class="mark">
+      <h1>Standards assistant</h1>
+      <p>Indiana academic standards<br>Mathematics and science<br><span class="nowrap">Grades 5&ndash;12</span></p>
+    </header>
+
+    <div class="controls">
+      <div class="field">
+        <label for="model">Model</label>
+        <select id="model" name="model"></select>
+      </div>
+
+      <label class="toggle" for="think">
+        <input type="checkbox" id="think" name="think">
+        <span>Show the model's reasoning</span>
+      </label>
+    </div>
+
+    <footer class="rail-foot">
+      <p class="status" id="status" data-state="pending">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="status-text">Checking Ollama</span>
+      </p>
+      <button type="button" id="clear" class="ghost">Clear conversation</button>
+    </footer>
+  </aside>
+
+  <main class="stage">
+    <div class="thread" id="thread" role="log" aria-live="polite" aria-label="Conversation">
+      <section class="opening" id="opening">
+        <h2>What should this lesson actually ask students to do?</h2>
+        <p class="lede">
+          Bring a standard, a grade, or a half-formed lesson idea. The assistant
+          drafts objectives, activities, and checks for understanding alongside you.
+        </p>
+        <div class="ledger" id="ledger" aria-busy="true">
+          <p class="ledger-loading">Reading the standards index&hellip;</p>
+        </div>
+        <p class="caveat" id="caveat"></p>
+      </section>
+    </div>
+
+    <form class="composer" id="composer">
+      <label class="sr-only" for="prompt">Message</label>
+      <textarea id="prompt" name="prompt" rows="1" autocomplete="off"
+        placeholder="Ask about a standard, an objective, or a lesson idea"></textarea>
+      <div class="composer-actions">
+        <span class="hint" id="hint">Enter sends, Shift + Enter starts a line</span>
+        <button type="submit" id="send">Send</button>
+        <button type="button" id="stop" hidden>Stop</button>
+      </div>
+    </form>
+  </main>
+
+</div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

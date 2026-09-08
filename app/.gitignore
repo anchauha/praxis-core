@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# Local event store: teacher and community material.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

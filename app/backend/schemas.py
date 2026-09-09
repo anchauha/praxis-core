@@ -19,11 +19,12 @@ Bump ``SCHEMA_VERSION`` when you do.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
+T = TypeVar("T")
 
 
 def _now() -> datetime:
@@ -85,10 +86,56 @@ class FieldOrigin(str, Enum):
     APPROVED_PROFILE = "approved_profile"
     RETRIEVED_SOURCE = "retrieved_source"
     SYSTEM_SUGGESTION = "system_suggestion"
+    SYNTHETIC_SCENARIO = "synthetic_scenario"
+    DEVELOPER_AUTHORED = "developer_authored"
+    CURATED_DEFAULT = "curated_default"
+
+
+class CaseOrigin(str, Enum):
+    UNKNOWN = "unknown"
+    SYNTHETIC = "synthetic"
+    DEVELOPER_AUTHORED = "developer_authored"
+    USER_PROVIDED = "user_provided"
+
+
+class AssetOrigin(str, Enum):
+    UNKNOWN = "unknown"
+    SYNTHETIC_SCENARIO = "synthetic_scenario"
+    PUBLIC_DOCUMENTED_ASSET = "public_documented_asset"
+    CONTRIBUTED = "contributed"
+
+
+class CommunityValidationStatus(str, Enum):
+    NOT_VALIDATED = "not_validated"
+    COMMUNITY_REVIEWED = "community_reviewed"
+
+
+class LabelOrigin(str, Enum):
+    UNKNOWN = "unknown"
+    PROGRAMMATIC = "programmatic"
+    AI_FEEDBACK = "ai_feedback"
+    DEVELOPER_REVIEW = "developer_review"
+    MIXED = "mixed"
+    TEACHER_REVIEW = "teacher_review"
+    COMMUNITY_REVIEW = "community_review"
+
+
+class TrainingUseStatus(str, Enum):
+    UNKNOWN = "unknown"
+    ALLOWED = "allowed"
+    DENIED = "denied"
+
+
+class SourceVerificationStatus(str, Enum):
+    """Reference binding and extraction review, never teaching quality."""
+
+    UNVERIFIED = "unverified"
+    PROVISIONAL = "provisional"
+    VERIFIED = "verified"
 
 
 class AlignmentStatus(str, Enum):
-    """Set by ``validate_plan``. The model may not put a value here."""
+    """Pedagogical alignment; automated source checks leave this unverified."""
 
     UNVERIFIED = "unverified"
     PROVISIONAL = "provisional"
@@ -158,7 +205,7 @@ class PreferenceLabel(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-class Provenanced[T](BaseModel):
+class Provenanced(BaseModel, Generic[T]):
     """One planning field, together with how much is actually known about it.
 
     A value of ``None`` on its own cannot say whether the teacher has not
@@ -168,12 +215,20 @@ class Provenanced[T](BaseModel):
     something the teacher confirmed.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     value: T | None = None
     status: FieldStatus = FieldStatus.UNKNOWN
     origin: FieldOrigin | None = None
     teacher_confirmed: bool = False
     source_refs: list[str] = Field(default_factory=list)
     note: str | None = None
+
+    @model_validator(mode="after")
+    def reject_synthetic_confirmation(self):
+        if self.origin is FieldOrigin.SYNTHETIC_SCENARIO and self.teacher_confirmed:
+            raise ValueError("synthetic scenario values cannot claim teacher confirmation")
+        return self
 
     @property
     def is_known(self) -> bool:
@@ -207,8 +262,10 @@ class DisciplineTargetStandards(BaseModel):
     standards_version: str | None = None
     requested_standard_keys: list[str] = Field(default_factory=list)
     confirmed_standard_keys: list[str] = Field(default_factory=list)
-    # Written by validate_plan, not by the teacher and not by the model.
+    # Requested/confirmed keys record selection; they do not certify teaching quality.
     alignment_status: AlignmentStatus = AlignmentStatus.UNVERIFIED
+    source_verification_status: SourceVerificationStatus = SourceVerificationStatus.UNVERIFIED
+    legacy_alignment_status: AlignmentStatus | None = None
 
 
 class CommunityAssetsCulturalWealth(BaseModel):
@@ -250,7 +307,27 @@ class TeacherRawIntentions(BaseModel):
     priorities: list[str] = Field(default_factory=list)
 
 
-class SeedLesson(BaseModel):
+class TrainingPermission(BaseModel):
+    """An application-recorded source-use decision, separate from license prose.
+
+    Missing legacy metadata stays unknown. An LLM cannot authorize a source.
+    The basis identifies the license/permission and the developer's review.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    training_use: TrainingUseStatus = TrainingUseStatus.UNKNOWN
+    training_permission_basis: str | None = None
+
+    @model_validator(mode="after")
+    def require_training_basis(self):
+        if self.training_use is TrainingUseStatus.ALLOWED and not (
+            self.training_permission_basis and self.training_permission_basis.strip()
+        ):
+            raise ValueError("allowed training use requires a recorded permission basis")
+        return self
+
+
+class SeedLesson(TrainingPermission):
     """Field 7. Optional source material with its rights attached."""
 
     source_id: str | None = None
@@ -328,6 +405,7 @@ class PlanningContext(BaseModel):
     """The eleven fields, versioned, each carrying its own status and origin."""
 
     schema_version: str = SCHEMA_VERSION
+    case_origin: CaseOrigin = CaseOrigin.UNKNOWN
     context_id: str | None = None
     session_id: str | None = None
     created_at: datetime = Field(default_factory=_now)
@@ -355,6 +433,17 @@ class PlanningContext(BaseModel):
     assessment_preference: Provenanced[AssessmentPreference] = Field(
         default_factory=Provenanced[AssessmentPreference])
 
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_context(cls, value):
+        if isinstance(value, dict) and value.get("schema_version") == "0.1.0":
+            slot = value.get("discipline_target_standards")
+            if isinstance(slot, dict) and isinstance(slot.get("value"), dict):
+                target = _legacy_status({**slot["value"], "schema_version": "0.1.0"})
+                target.pop("schema_version")
+                value = {**value, "discipline_target_standards": {**slot, "value": target}}
+        return value
+
     def slots(self) -> list[tuple[str, int, Provenanced[Any]]]:
         return [(name, number, getattr(self, name))
                 for name, number in PLANNING_FIELDS]
@@ -377,15 +466,18 @@ class PlanningContext(BaseModel):
                 "status": slot.status.value,
                 "origin": slot.origin.value if slot.origin else None,
                 "teacher_confirmed": slot.teacher_confirmed,
+                "source_refs": list(slot.source_refs),
+                "note": slot.note,
             }
-        return {"planning_context": context, "field_state": state}
+        return {"planning_context": context, "field_state": state,
+                "case_origin": self.case_origin.value}
 
     def to_prompt_view(self) -> dict[str, Any]:
         """What the model sees: known values, plus what is explicitly missing.
 
-        The wrapper itself is not sent. Naming the unspecified fields is the
-        point of this view, so that absence reads as absence rather than as an
-        invitation to supply a plausible value.
+        The parallel field_state retains origin, confirmation and source refs.
+        Known fictional values and unconfirmed suggestions must not look like
+        teacher-confirmed facts. Withheld values are not sent.
         """
         supplied: dict[str, Any] = {}
         unspecified: dict[str, str] = {}
@@ -396,7 +488,14 @@ class PlanningContext(BaseModel):
                                   if isinstance(value, BaseModel) else value)
             else:
                 unspecified[name] = slot.status.value
-        return {"supplied": supplied, "unspecified": unspecified}
+        state = self.to_flat_export()["field_state"]
+        # Do not expose notes/source refs attached to a withheld value.
+        for name, _number, slot in self.slots():
+            if slot.status is FieldStatus.WITHHELD:
+                state[name] = {k: v for k, v in state[name].items()
+                               if k not in {"note", "source_refs"}}
+        return {"supplied": supplied, "unspecified": unspecified,
+                "field_state": state, "case_origin": self.case_origin.value}
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +573,11 @@ class AssetPermissions(BaseModel):
 
 
 class CommunityEvidence(BaseModel):
-    """A contributed asset, in the contributor's own words."""
+    """A contributed, public or fictional asset with explicit origin."""
+
+    model_config = ConfigDict(extra="forbid")
+    asset_origin: AssetOrigin = AssetOrigin.UNKNOWN
+    community_validation_status: CommunityValidationStatus = CommunityValidationStatus.NOT_VALIDATED
 
     evidence_ref: str
     asset_id: str
@@ -489,8 +592,15 @@ class CommunityEvidence(BaseModel):
     reviewed_on: datetime | None = None
     expires_on: datetime | None = None
 
+    @model_validator(mode="after")
+    def reject_fictional_community_validation(self):
+        if (self.asset_origin is AssetOrigin.SYNTHETIC_SCENARIO
+                and self.community_validation_status is not CommunityValidationStatus.NOT_VALIDATED):
+            raise ValueError("synthetic assets cannot claim real community validation")
+        return self
 
-class SeedExcerpt(BaseModel):
+
+class SeedExcerpt(TrainingPermission):
     """A permitted extract from a source lesson, with its lineage."""
 
     evidence_ref: str
@@ -581,10 +691,12 @@ class AssessmentSpec(BaseModel):
 class LessonPlanDraft(BaseModel):
     """What the model is allowed to produce.
 
-    Deliberately excludes ``alignment_status``, ``validation`` and every
+    Deliberately excludes verification statuses, ``validation`` and every
     identifier. Those are the application's to set. Keeping them out of the
     type is what stops a fluent draft from declaring itself verified.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     title: str
     objectives: list[str] = Field(default_factory=list)
@@ -605,6 +717,14 @@ class LessonPlan(LessonPlanDraft):
     plan_id: str | None = None
     created_at: datetime = Field(default_factory=_now)
     alignment_status: AlignmentStatus = AlignmentStatus.UNVERIFIED
+    source_verification_status: SourceVerificationStatus = SourceVerificationStatus.UNVERIFIED
+    legacy_alignment_status: AlignmentStatus | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_status(cls, value):
+        return _legacy_status(value)
+
     validation: "ValidationReport | None" = None
 
     @classmethod
@@ -627,6 +747,14 @@ class ValidationFinding(BaseModel):
 
 class ValidationReport(BaseModel):
     schema_version: str = SCHEMA_VERSION
+    source_verification_status: SourceVerificationStatus = SourceVerificationStatus.UNVERIFIED
+    legacy_alignment_status: AlignmentStatus | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_status(cls, value):
+        return _legacy_status(value)
+
     checked_at: datetime = Field(default_factory=_now)
     findings: list[ValidationFinding] = Field(default_factory=list)
     alignment_status: AlignmentStatus = AlignmentStatus.UNVERIFIED
@@ -684,7 +812,18 @@ class GenerationEvent(BaseModel):
     validation: ValidationReport | None = None
 
 
-class RubricRating(BaseModel):
+class LabelProvenance(BaseModel):
+    """Who supplied a label; absent historical metadata never means human review."""
+
+    model_config = ConfigDict(extra="forbid")
+    label_origin: LabelOrigin = LabelOrigin.UNKNOWN
+    judge_model: str | None = None
+    judge_prompt_version: str | None = None
+    judge_config: dict[str, Any] = Field(default_factory=dict)
+    rule_version: str | None = None
+
+
+class RubricRating(LabelProvenance):
     dimension: RubricDimension
     score: int | None = Field(default=None, ge=0, le=3)
     not_applicable_reason: str | None = None
@@ -708,7 +847,7 @@ class RevisionEvent(BaseModel):
     reviewer_notes: str | None = None
 
 
-class PreferenceEvent(BaseModel):
+class PreferenceEvent(LabelProvenance):
     event_id: str
     created_at: datetime = Field(default_factory=_now)
     schema_version: str = SCHEMA_VERSION
@@ -742,6 +881,21 @@ class ExportManifest(BaseModel):
     split_assignments: dict[str, str] = Field(default_factory=dict)
     preprocessing_versions: dict[str, str] = Field(default_factory=dict)
     exclusions: list[ExportExclusion] = Field(default_factory=list)
+
+
+def _legacy_status(value: Any) -> Any:
+    """Read v0.1 without reclassifying its source-only verdict as pedagogy.
+
+    Preserve the old label for audit. Recheck sources with the corrected binder
+    before claiming verification; v0.1 could accept a mismatched evidence ref.
+    Stored immutable JSON is not rewritten by this read-time normalization.
+    """
+    if isinstance(value, dict) and value.get("schema_version") == "0.1.0":
+        value = dict(value)
+        value.setdefault("legacy_alignment_status", value.get("alignment_status", "unverified"))
+        value["alignment_status"] = "unverified"
+        value["source_verification_status"] = "unverified"
+    return value
 
 
 LessonPlan.model_rebuild()

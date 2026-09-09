@@ -51,7 +51,8 @@ backend/
   validation.py     checks a plan against the context and evidence it came from
   store.py          SQLite event store
 tests/
-  test_store.py     runs standalone or under pytest
+  test_store.py     original standalone store tests
+  test_contract_integrity.py  provenance, citations, DPO inputs and seed permissions
 frontend/
   index.html        one page: rail, thread, composer
   app.js            SSE client, markdown rendering, KaTeX typesetting
@@ -61,12 +62,17 @@ data/
 ```
 
 `data/standards_index.json` is a build artifact copied byte-for-byte from
-`standards_extract/standards_index.json`. Regenerate both by running
-`standards_extract/build_manifest.py` then `standards_extract/indexer.py`.
+`standards_extract/standards_index.json`. Regenerate both by running `standards_extract/indexer.py` with a Python environment
+containing PyMuPDF. Rebuild the manifest only for an intentional source change,
+and review its serving/version decisions before regenerating the index.
 It currently holds 774 standards from all 26 courses in
 `standards_extract/course_manifest.json`, across three published versions
 (2023, 2022 and 2020). Two of those courses are extracted but have `served`
-set to false; each one's `notes` field says why.
+set to false: Quantitative Reasoning (repeated codes) and Environmental Science
+(version confirmation). Each one's `notes` field says why. Future retrieval must
+filter by the manifest; the archived index includes all 26 courses. Review
+metadata now matches the reviewed manifest; extraction review does not certify
+that a lesson teaches or assesses a standard.
 
 ### API
 
@@ -79,7 +85,7 @@ set to false; each one's `notes` field says why.
 
 `POST /api/chat` takes `{messages, model, think, temperature}`. The system prompt
 is prepended server-side, so the client never sends it. Every turn replays the
-full message list — there is no session state on the server.
+full message list. The SQLite store exists, but this route does not yet read or write planning sessions, context/evidence snapshots, generations or preferences.
 
 Models without a thinking mode reject Ollama's `think` field outright, so the
 client drops it and retries once when that is the only thing that failed.
@@ -88,8 +94,8 @@ client drops it and retries once when that is the only thing that failed.
 
 `store.py` keeps sessions, planning events and export manifests in SQLite.
 Events are written once and never edited; an `UPDATE` on the events table is
-refused by a trigger. A generation stores the exact context and evidence it was
-given, so `store.replay(generation_id, owner_id)` rebuilds a past response's
+refused by a trigger. A generation links immutable context and evidence snapshots and stores the exact
+prompt messages it was given, so `store.replay(generation_id, owner_id)` rebuilds a past response's
 inputs without consulting a corpus that has since changed. That replay is what
 makes an SFT row or a DPO pair reproducible.
 
@@ -98,7 +104,7 @@ analysis, model training and public sharing. `training_exclusions()` checks both
 the inputs and the output, so an asset cleared for classroom use is still
 excluded from a training export unless it is cleared for that too.
 
-Every read is scoped by `owner_id`, and a session belonging to someone else
+Session and event reads are scoped by `owner_id`, and a session belonging to someone else
 returns nothing rather than an error. Splits are assigned per family, above the
 level of a single session, so a paraphrase cannot land on the other side of one.
 
@@ -107,10 +113,35 @@ contributor may withdraw, and it leaves a tombstone in `redactions` recording
 that it happened. It removes material from future exports and from retrieval; it
 cannot remove what a model has already learnt from it.
 
-Run the tests with:
+The store has five tables: sessions, events, splits, export manifests and
+redactions. Its JSON contracts are now version 0.2.0; the SQL layout is unchanged.
+Legacy missing origins/permissions remain unknown, and immutable events are not
+rewritten. Synthetic session training flags record developer authorization;
+they are not participant consent.
+
+`append_preference()` requires distinct existing candidates in the same
+owner/session, matching saved context/evidence, and identical nonempty prompts
+and prompt versions. `preference_exclusions()` rechecks older pairs and current
+permissions before export. It excludes ties, missing label provenance and
+incomplete AI-judge metadata. Rejected answers may contain intentional quality
+errors; chosen answers must pass the recorded-validation gate. These are
+structural/permission gates; curated exporters and label audits remain to build.
+
+Seed rights prose is separate from `training_use: unknown | allowed | denied`.
+Both context seeds and evidence excerpts need `allowed` plus a recorded
+`training_permission_basis` for training. Unknown/denied values are excluded.
+
+`validate_plan()` binds each standard key to its exact standard evidence ref,
+rejects duplicate refs, and returns `source_verification_status` independently
+of `alignment_status`. Automated checks leave pedagogical alignment unverified.
+It returns a report without mutating the plan; future integration must attach
+the report/source status. Model drafts cannot assign either verification field.
+
+Run the tests from the app directory with:
 
 ```bash
-.venv/Scripts/python.exe tests/test_store.py
+.venv/Scripts/python.exe -X utf8 -B tests/test_store.py
+.venv/Scripts/python.exe -X utf8 -B -m unittest discover -s tests -p test_contract_integrity.py
 ```
 
 ## Notes

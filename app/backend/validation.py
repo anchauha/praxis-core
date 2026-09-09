@@ -11,8 +11,10 @@ and permissions it was given. A plan can pass every check and still be a poor
 lesson; that is what the rubric and human review are for.
 """
 
+from collections import Counter
+
 from .schemas import (
-    AlignmentStatus,
+    SourceVerificationStatus,
     EvidenceBundle,
     LessonPlan,
     PlanningContext,
@@ -29,12 +31,22 @@ def _finding(code: str, severity: Severity, message: str,
 
 def validate_plan(plan: LessonPlan, context: PlanningContext,
                   evidence: EvidenceBundle) -> ValidationReport:
-    """Check one plan and return what is wrong with it, plus its alignment status."""
+    """Check one plan and return what is wrong with it, source verification separately from pedagogical alignment."""
     findings: list[ValidationFinding] = []
 
     allowed_refs = evidence.refs()
     allowed_keys = evidence.standard_keys()
-    standards_by_key = {s.standard_key: s for s in evidence.standards}
+    refs = [item.evidence_ref for group in
+            (evidence.standards, evidence.research, evidence.community, evidence.seed_excerpts)
+            for item in group]
+    duplicate_refs = {ref for ref, count in Counter(refs).items() if count > 1}
+    for ref in sorted(duplicate_refs):
+        findings.append(_finding(
+            "duplicate_evidence_ref", Severity.ERROR,
+            f"Evidence ref {ref!r} identifies more than one supplied record.", "evidence"))
+    standards_by_ref = {s.evidence_ref: s for s in evidence.standards
+                        if s.evidence_ref not in duplicate_refs}
+    key_counts = Counter(s.standard_key for s in evidence.standards)
     community_by_ref = evidence.community_by_ref()
 
     # --- citations resolve -------------------------------------------------
@@ -51,14 +63,21 @@ def validate_plan(plan: LessonPlan, context: PlanningContext,
                 "evidence_ref_not_found", Severity.ERROR,
                 f"Cites evidence {record.evidence_ref!r}, which is not in the bundle.",
                 path))
-        standard = standards_by_key.get(record.standard_key)
-        if standard is not None and standard.standard_key_ambiguous:
+        standard = standards_by_ref.get(record.evidence_ref)
+        if record.evidence_ref in allowed_refs and (
+            standard is None or standard.standard_key != record.standard_key
+        ):
+            findings.append(_finding(
+                "standard_evidence_mismatch", Severity.ERROR,
+                f"Evidence {record.evidence_ref!r} does not uniquely identify "
+                f"standard {record.standard_key}.", path))
+        if standard is not None and (standard.standard_key_ambiguous
+                                     or key_counts[standard.standard_key] > 1):
             findings.append(_finding(
                 "ambiguous_standard_key", Severity.WARNING,
-                f"{record.standard_key} is printed more than once in its source "
-                f"document, so the code alone does not identify one standard. "
-                f"Show the domain alongside it.",
-                path))
+                f"{record.standard_key} does not uniquely identify a source standard. "
+                "Keep the domain and evidence ref; resolve the source ambiguity "
+                "before marking the source verified.", path))
 
     for i, ref in enumerate(plan.citations):
         if ref not in allowed_refs:
@@ -202,26 +221,20 @@ def validate_plan(plan: LessonPlan, context: PlanningContext,
             "access_options"))
 
     report = ValidationReport(findings=findings)
-    report.alignment_status = _alignment_status(plan, evidence, report)
+    report.source_verification_status = _source_verification_status(plan, evidence, report)
     return report
 
 
-def _alignment_status(plan: LessonPlan, evidence: EvidenceBundle,
-                      report: ValidationReport) -> AlignmentStatus:
-    """Verified means every cited standard resolves to reviewed, unambiguous text.
-
-    Until a person has checked an extraction against its source PDF, the honest
-    answer is provisional. That is a statement about the corpus, not a fault in
-    the plan.
-    """
-    if report.errors or not plan.alignment:
-        return AlignmentStatus.UNVERIFIED
-
-    standards_by_key = {s.standard_key: s for s in evidence.standards}
-    cited = [standards_by_key.get(r.standard_key) for r in plan.alignment]
-    if any(s is None for s in cited):
-        return AlignmentStatus.UNVERIFIED
-    if all(s.extraction_review_status == "reviewed" and not s.standard_key_ambiguous
-           for s in cited):
-        return AlignmentStatus.VERIFIED
-    return AlignmentStatus.PROVISIONAL
+def _source_verification_status(plan: LessonPlan, evidence: EvidenceBundle,
+                                report: ValidationReport) -> SourceVerificationStatus:
+    """Verify source identity and review only; assess teaching quality separately."""
+    binding_errors = {"duplicate_evidence_ref", "standard_not_in_evidence",
+                      "evidence_ref_not_found", "standard_evidence_mismatch"}
+    if not plan.alignment or any(f.code in binding_errors for f in report.errors):
+        return SourceVerificationStatus.UNVERIFIED
+    standards_by_ref = {s.evidence_ref: s for s in evidence.standards}
+    cited = [standards_by_ref[r.evidence_ref] for r in plan.alignment]
+    ambiguous = any(f.code == "ambiguous_standard_key" for f in report.findings)
+    if not ambiguous and all(s.extraction_review_status == "reviewed" for s in cited):
+        return SourceVerificationStatus.VERIFIED
+    return SourceVerificationStatus.PROVISIONAL

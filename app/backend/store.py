@@ -11,8 +11,8 @@ saying it happened. Note the limit honestly: removing a row stops it reaching
 future exports and retrieval, but it cannot remove whatever a model has already
 learnt from it.
 
-Every read is scoped by ``owner_id``. Asking for another owner's session returns
-nothing rather than an error, so the store does not confirm that a row exists.
+Session and event reads are scoped by ``owner_id``. Asking for another owner's
+session returns nothing, so the store does not confirm that a row exists.
 
 The methods are synchronous. SQLite writes here are small, but call them from
 async paths through ``starlette.concurrency.run_in_threadpool`` rather than
@@ -32,9 +32,12 @@ from .schemas import (
     EvidenceSnapshot,
     ExportManifest,
     GenerationEvent,
+    LabelOrigin,
     PreferenceEvent,
+    PreferenceLabel,
     RevisionEvent,
     Severity,
+    TrainingUseStatus,
 )
 
 SCHEMA_USER_VERSION = 1
@@ -137,7 +140,7 @@ class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode = WAL")
@@ -260,10 +263,53 @@ class Store:
 
     def append_preference(self, event: PreferenceEvent, session_id: str,
                           owner_id: str) -> str:
-        return self._append(
-            "preference", session_id, owner_id, event,
-            context_snapshot_id=event.context_snapshot_id,
-            evidence_snapshot_id=event.evidence_snapshot_id)
+        # Keep validation and insertion together, including across connections.
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if self.get_session(session_id, owner_id) is None:
+                raise PermissionError("session is not available to this owner")
+            reasons = self._preference_input_errors(event, session_id, owner_id)
+            if reasons:
+                raise ValueError("invalid preference inputs: " + "; ".join(reasons))
+            return self._append(
+                "preference", session_id, owner_id, event,
+                context_snapshot_id=event.context_snapshot_id,
+                evidence_snapshot_id=event.evidence_snapshot_id)
+
+    def _preference_input_errors(self, event: PreferenceEvent, session_id: str,
+                                 owner_id: str) -> list[str]:
+        """Shared by insertion and export checks, including legacy rows."""
+        reasons: list[str] = []
+        if event.candidate_a_generation_id == event.candidate_b_generation_id:
+            reasons.append("candidates must be distinct generations")
+        for event_id, kind in ((event.context_snapshot_id, "context_snapshot"),
+                               (event.evidence_snapshot_id, "evidence_snapshot")):
+            payload = self._payload(event_id, owner_id, kind)
+            if payload is None or payload.get("session_id") != session_id:
+                reasons.append(f"{kind} is missing or outside this owner/session")
+        candidates = []
+        for name, event_id in (("A", event.candidate_a_generation_id),
+                               ("B", event.candidate_b_generation_id)):
+            candidate = self.get_generation(event_id, owner_id)
+            if candidate is None or candidate.session_id != session_id:
+                reasons.append(f"candidate {name} is missing or outside this owner/session")
+                continue
+            candidates.append(candidate)
+            if (candidate.context_snapshot_id != event.context_snapshot_id
+                    or candidate.evidence_snapshot_id != event.evidence_snapshot_id):
+                reasons.append(f"candidate {name} does not use the shared snapshots")
+            messages = candidate.prompt_messages
+            if (not messages or not any(m.get("content", "").strip() for m in messages)
+                    or any(m.get("role") not in {"system", "user", "assistant", "tool"}
+                           or "content" not in m for m in messages)):
+                reasons.append(f"candidate {name} has no usable exact prompt")
+        if len(candidates) == 2:
+            # List order and exact string content matter. Do not trim/normalize.
+            if candidates[0].prompt_messages != candidates[1].prompt_messages:
+                reasons.append("candidate prompt messages differ")
+            if candidates[0].prompt_version != candidates[1].prompt_version:
+                reasons.append("candidate prompt versions differ")
+        return reasons
 
     # -- reading ----------------------------------------------------------
 
@@ -299,6 +345,10 @@ class Store:
         payload = self._payload(generation_id, owner_id, "generation")
         return GenerationEvent.model_validate(payload) if payload else None
 
+    def get_preference(self, event_id: str, owner_id: str) -> PreferenceEvent | None:
+        payload = self._payload(event_id, owner_id, "preference")
+        return PreferenceEvent.model_validate(payload) if payload else None
+
     def generations(self, session_id: str, owner_id: str) -> list[GenerationEvent]:
         rows = self._rows(
             "SELECT e.payload FROM events e JOIN sessions s USING (session_id)"
@@ -329,7 +379,9 @@ class Store:
                                 "context_snapshot")
         evidence = self._payload(generation.evidence_snapshot_id, owner_id,
                                  "evidence_snapshot")
-        if context is None or evidence is None:
+        if (context is None or evidence is None
+                or context.get("session_id") != generation.session_id
+                or evidence.get("session_id") != generation.session_id):
             return None
         return (ContextSnapshot.model_validate(context),
                 EvidenceSnapshot.model_validate(evidence),
@@ -373,11 +425,15 @@ class Store:
         in a classroom is not permission to put it in a dataset, so the two are
         tested separately.
         """
+        return self._generation_exclusions(generation_id, owner_id, check_output=True)
+
+    def _generation_exclusions(self, generation_id: str, owner_id: str,
+                               *, check_output: bool) -> list[str]:
         reasons: list[str] = []
         replayed = self.replay(generation_id, owner_id)
         if replayed is None:
             return ["generation not found or its snapshots are missing"]
-        _context, evidence, generation = replayed
+        context, evidence, generation = replayed
 
         rows = self._rows(
             "SELECT consent_model_training FROM sessions WHERE session_id = ?"
@@ -391,24 +447,80 @@ class Store:
                     f"community asset {asset.asset_id} is not cleared for "
                     f"model training")
 
-        for excerpt in evidence.bundle.seed_excerpts:
-            if not excerpt.rights:
-                reasons.append(
-                    f"seed excerpt {excerpt.source_id} has unresolved rights")
+        seeds = [(f"seed excerpt {s.source_id}", s)
+                 for s in evidence.bundle.seed_excerpts]
+        seed_slot = context.context.seed_lesson
+        if seed_slot.value is not None:
+            seeds.append((f"context seed {seed_slot.value.source_id}", seed_slot.value))
+        for name, seed in seeds:
+            if seed.training_use is not TrainingUseStatus.ALLOWED:
+                reasons.append(f"{name} training use is {seed.training_use.value}")
+            elif not (seed.training_permission_basis and seed.training_permission_basis.strip()):
+                reasons.append(f"{name} has no recorded training permission basis")
 
-        if generation.validation is not None:
-            errors = [f for f in generation.validation.findings
-                      if f.severity is Severity.ERROR]
-            if errors:
-                reasons.append(
-                    f"validation reported {len(errors)} error(s): "
-                    f"{errors[0].code}")
-        else:
-            reasons.append("generation was never validated")
+        # Rejected DPO answers can intentionally contain a known quality error.
+        # Their input permissions still apply; the chosen answer must pass.
+        if check_output:
+            if generation.validation is not None:
+                errors = [f for f in generation.validation.findings
+                          if f.severity is Severity.ERROR]
+                if errors:
+                    reasons.append(
+                        f"validation reported {len(errors)} error(s): "
+                        f"{errors[0].code}")
+            else:
+                reasons.append("generation was never validated")
 
         if self.get_split(self._family_of(generation.session_id)) is None:
             reasons.append("family has no split assigned")
 
+        return reasons
+
+    def preference_exclusions(self, event_id: str, owner_id: str) -> list[str]:
+        """Structural/permission gate for DPO; not a complete curation policy.
+
+        Recheck on every export, so old bad pairs and withdrawn permission fail
+        closed. Callers must also select the intended split, audit label quality,
+        and retain the provenance alongside trainer-formatted rows.
+        """
+        rows = self._rows(
+            "SELECT e.session_id FROM events e JOIN sessions s USING (session_id)"
+            " WHERE e.event_id = ? AND e.kind = 'preference' AND s.owner_id = ?",
+            (event_id, owner_id))
+        if not rows:
+            return ["preference not found"]
+        try:
+            event = self.get_preference(event_id, owner_id)
+            reasons = self._preference_input_errors(event, rows[0]["session_id"], owner_id)
+        except (ValueError, TypeError):
+            return ["preference or candidate payload is invalid"]
+        if reasons:
+            return reasons
+        if event.label not in {PreferenceLabel.CHOSEN_A, PreferenceLabel.CHOSEN_B}:
+            reasons.append("preference has no decisive winner")
+        if event.label_origin is LabelOrigin.UNKNOWN:
+            reasons.append("preference label origin is unknown")
+        if event.label_origin is LabelOrigin.AI_FEEDBACK and not (
+            event.judge_model and event.judge_model.strip()
+            and event.judge_prompt_version and event.judge_prompt_version.strip()
+        ):
+            reasons.append("AI preference lacks judge model or prompt version")
+        if event.label_origin is LabelOrigin.PROGRAMMATIC and not (
+            event.rule_version and event.rule_version.strip()
+        ):
+            reasons.append("programmatic preference lacks rule version")
+        candidate_ids = (event.candidate_a_generation_id, event.candidate_b_generation_id)
+        chosen_id = (candidate_ids[0] if event.label is PreferenceLabel.CHOSEN_A
+                     else candidate_ids[1])
+        for candidate_id in candidate_ids:
+            reasons.extend(f"{candidate_id}: {reason}" for reason in
+                           self._generation_exclusions(candidate_id, owner_id,
+                                                       check_output=candidate_id == chosen_id))
+        candidates = [self.get_generation(i, owner_id) for i in candidate_ids]
+        if any(not c.output_raw.strip() for c in candidates):
+            reasons.append("candidate output is empty")
+        elif candidates[0].output_raw == candidates[1].output_raw:
+            reasons.append("candidate outputs are identical")
         return reasons
 
     def _family_of(self, session_id: str) -> str:

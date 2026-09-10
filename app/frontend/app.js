@@ -368,9 +368,8 @@ async function loadCorpus() {
     ledger.setAttribute("aria-busy", "false");
 
     caveat.textContent =
-      "The assistant cannot read these records yet. Retrieval is the next piece of " +
-      "work, so for now answers come from the model alone and any standard code it " +
-      "gives you needs checking against the index.";
+      "General chat answers from the model alone. Open the lesson planner to select " +
+      "standards, generate a source-grounded draft, and save its context and checks.";
   } catch (error) {
     ledger.innerHTML = `<p class="ledger-error">The standards index did not load. ${escapeHtml(
       error.message

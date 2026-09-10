@@ -324,6 +324,19 @@ class Store:
             (event_id, kind, owner_id))
         return json.loads(rows[0]["payload"]) if rows else None
 
+    def get_context_snapshot(self, event_id: str, owner_id: str) -> ContextSnapshot | None:
+        payload = self._payload(event_id, owner_id, "context_snapshot")
+        return ContextSnapshot.model_validate(payload) if payload else None
+
+    def evidence_for_context(self, context_id: str, owner_id: str) -> EvidenceSnapshot | None:
+        # The planner assigns the context event ID as its paired bundle ID.
+        rows = self._rows(
+            "SELECT e.payload FROM events e JOIN sessions s USING (session_id)"
+            " WHERE e.kind = 'evidence_snapshot' AND s.owner_id = ?"
+            " AND json_extract(e.payload, '$.bundle.bundle_id') = ?"
+            " ORDER BY e.rowid DESC LIMIT 1", (owner_id, context_id))
+        return EvidenceSnapshot.model_validate_json(rows[0]["payload"]) if rows else None
+
     def latest_context(self, session_id: str, owner_id: str) -> ContextSnapshot | None:
         """The current planning state, derived rather than stored separately."""
         rows = self._rows(

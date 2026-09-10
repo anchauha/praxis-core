@@ -3,10 +3,15 @@
 A local chat interface for planning lessons against the Indiana Academic
 Standards index. FastAPI serves the UI and streams chat through a local Ollama.
 
-**Retrieval is not built yet.** The assistant answers from the model's own
-knowledge; the standards index is loaded only to report what it contains. The
-opening screen says so, and the system prompt tells the model to flag any
-standard code as unverified.
+The home page is now a **lesson planner**. Select standards, save the eleven-field
+context, generate a structured lesson with local Ollama, inspect validation
+findings, edit the wording and save a revision. Saved sessions reload in the same
+browser. General chat is available at `/chat`; it still answers without retrieval.
+
+The planner exposes 711 standards from the 24 manifest-enabled courses. The full
+archive remains 774 records from 26 courses, including two explicit course holds.
+See [the inference baseline](C:/code/praxis-core/research/inference_baseline.md)
+for API details, behavior, validation limits and the conservative prompt budget.
 
 ## Run it
 
@@ -32,6 +37,8 @@ Every setting has a working default. To override, create `.env` beside
 | `CATPC_SYSTEM_PROMPT` | see `backend/config.py` | Replaced wholesale when set. |
 | `CATPC_REQUEST_TIMEOUT` | `600` | Seconds for a full generation. |
 | `CATPC_STORE_PATH` | `data/catpc.sqlite` | Event store. Not in version control. |
+| `CATPC_COURSE_MANIFEST` | `../standards_extract/course_manifest.json` | Source/version/serving decisions; required by the planner. |
+| `CATPC_PLANNING_NUM_PREDICT` | `2048` | Output-token limit for structured lessons. |
 
 `CATPC_NUM_CTX` is the setting most likely to need attention. Ollama sizes its
 CUDA compute buffer from it, so on an 8 GB card a 9B model fails to load at the
@@ -50,10 +57,15 @@ backend/
   schemas.py        chat API plus the planning, evidence and lesson contracts
   validation.py     checks a plan against the context and evidence it came from
   store.py          SQLite event store
+  retrieval.py      manifest-filtered exact lookup and lexical search
+  planning.py       shared context/evidence preparation, prompt and validation
+  planning_api.py   browser-owned sessions, generation and revision routes
 tests/
   test_store.py     original standalone store tests
   test_contract_integrity.py  provenance, citations, DPO inputs and seed permissions
+  test_planning.py  corpus/API/store integration and structured Ollama requests
 frontend/
+  planner.html / planner.js / planner.css  planning form and lesson editor
   index.html        one page: rail, thread, composer
   app.js            SSE client, markdown rendering, KaTeX typesetting
   styles.css
@@ -69,8 +81,8 @@ It currently holds 774 standards from all 26 courses in
 `standards_extract/course_manifest.json`, across three published versions
 (2023, 2022 and 2020). Two of those courses are extracted but have `served`
 set to false: Quantitative Reasoning (repeated codes) and Environmental Science
-(version confirmation). Each one's `notes` field says why. Future retrieval must
-filter by the manifest; the archived index includes all 26 courses. Review
+(version confirmation). Each one's `notes` field says why. Planning retrieval filters
+by the manifest; the archived index includes all 26 courses. Review
 metadata now matches the reviewed manifest; extraction review does not certify
 that a lesson teaches or assesses a standard.
 
@@ -134,18 +146,18 @@ Both context seeds and evidence excerpts need `allowed` plus a recorded
 `validate_plan()` binds each standard key to its exact standard evidence ref,
 rejects duplicate refs, and returns `source_verification_status` independently
 of `alignment_status`. Automated checks leave pedagogical alignment unverified.
-It returns a report without mutating the plan; future integration must attach
+It returns a report without mutating the plan; the planning integration attaches
 the report/source status. Model drafts cannot assign either verification field.
 
 Run the tests from the app directory with:
 
 ```bash
 .venv/Scripts/python.exe -X utf8 -B tests/test_store.py
-.venv/Scripts/python.exe -X utf8 -B -m unittest discover -s tests -p test_contract_integrity.py
+.venv/Scripts/python.exe -X utf8 -B -m unittest discover -s tests -p "test_*.py"
 ```
 
 ## Notes
 
 - Fonts come from Google Fonts and KaTeX from jsDelivr, so first paint needs a
   network connection. Both degrade to system fonts and raw LaTeX offline.
-- The narrow-viewport layout is written but has not been checked in a browser.
+- The planning view was checked at desktop and 390-pixel mobile widths. General chat received no new layout changes.

@@ -1,7 +1,7 @@
 """Read-only view of the standards index.
 
-Only summary statistics are exposed for now. Retrieval over the 401 standard
-records is the next piece of work and will live alongside this module.
+This module reports archive totals. The planning view uses manifest-filtered
+retrieval in retrieval.py; general chat still uses no retrieved evidence.
 """
 
 from __future__ import annotations
@@ -49,5 +49,6 @@ def summary() -> dict[str, Any]:
         "total": len(standards),
         "essential": sum(row["essential"] for row in rows),
         "subjects": rows,
-        "retrieval_connected": False,
+        "retrieval_connected": False,  # General chat remains ungrounded.
+        "planning_retrieval_connected": True,
     }

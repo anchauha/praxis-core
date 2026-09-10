@@ -58,7 +58,8 @@ class OllamaClient:
                     "family": details.get("family"),
                     "size_bytes": entry.get("size"),
                     # Cloud-hosted models report a zero on-disk size.
-                    "is_cloud": name.endswith("-cloud") or ":cloud" in name,
+                    "is_cloud": name.endswith("-cloud") or ":cloud" in name or bool(entry.get("remote_host") or entry.get("remote_model")),
+                    "digest": entry.get("digest"),
                 }
             )
         models.sort(key=lambda m: (m["is_cloud"], m["name"]))
@@ -100,6 +101,29 @@ class OllamaClient:
             payload.pop("think", None)
             async for chunk in self._stream(payload):
                 yield chunk
+
+    async def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """One bounded structured response; payload retains the actual retry flags."""
+        for attempt in range(2):
+            try:
+                response = await self._client.post("/api/chat", json=payload)
+                if response.status_code >= 400:
+                    message = _error_message(response.content, response.status_code)
+                    if attempt == 0 and "think" in message.lower() and "think" in payload:
+                        payload.pop("think")
+                        continue
+                    raise OllamaError(message)
+                result = response.json()
+                if not isinstance(result, dict):
+                    raise OllamaError("Ollama returned an invalid response object.")
+                if "error" in result:
+                    raise OllamaError(str(result["error"]))
+                return result
+            except httpx.HTTPError as exc:
+                raise OllamaUnavailable(str(exc)) from exc
+            except ValueError as exc:
+                raise OllamaError("Ollama returned invalid JSON.") from exc
+        raise OllamaError("Structured generation failed.")
 
     async def _stream(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         try:

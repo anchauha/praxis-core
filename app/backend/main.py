@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import corpus
+from .planning_api import router as planning_router
 from .config import get_settings
 from .ollama_client import OllamaClient, OllamaError, OllamaUnavailable
 from .store import Store
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Standards assistant", lifespan=lifespan)
+app.include_router(planning_router)
 
 
 @app.get("/api/health", response_model=Health)
@@ -124,6 +126,11 @@ def _stats(chunk: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/")
 async def index() -> FileResponse:
+    return FileResponse(settings.frontend_dir / "planner.html")
+
+
+@app.get("/chat")
+async def general_chat() -> FileResponse:
     return FileResponse(settings.frontend_dir / "index.html")
 
 

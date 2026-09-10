@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     connect_timeout: float = 5.0
 
     standards_index: Path = BASE_DIR / "data" / "standards_index.json"
+    course_manifest: Path = BASE_DIR.parent / "standards_extract" / "course_manifest.json"
+    planning_num_predict: int = 2048
 
     # Sessions, planning events and export manifests. Holds teacher and
     # community material, so it stays out of version control.

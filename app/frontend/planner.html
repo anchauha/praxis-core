@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Praxis · Lesson planner</title>
+  <link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/planner.css">
+</head>
+<body class="planner-page">
+<header class="planner-header">
+  <div><a class="brand" href="/">Praxis</a><span>Indiana STEM lesson planner · Grades 5–12</span></div>
+  <a href="/chat">General chat</a>
+</header>
+<main class="planner-layout">
+  <section class="planning-panel" aria-labelledby="planning-title">
+    <div class="section-heading"><h1 id="planning-title">Plan a lesson</h1><button id="new-session" type="button">New lesson</button></div>
+    <label for="sessions">Saved lessons in this browser</label>
+    <select id="sessions"><option value="">Start a new lesson</option></select>
+    <p class="small" id="coverage">Reading the standards corpus…</p>
+    <details class="restrictions"><summary>Course availability</summary><ul id="course-holds"></ul></details>
+    <form id="planning-form">
+      <label for="case-origin">Planning context</label>
+      <select id="case-origin"><option value="synthetic">Synthetic scenario</option><option value="developer_authored">My planning request</option></select>
+      <p class="small">Use aggregate classroom information. Synthetic scenarios do not represent real teachers or communities.</p>
+      <div class="form-grid">
+        <div><label for="subject">Subject</label><select id="subject"><option>Mathematics</option><option>Science</option></select></div>
+        <div><label for="grade">Enrolled grade (optional)</label><select id="grade"><option value="">Not specified</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option></select></div>
+      </div>
+      <label for="course">Course and standards version</label><select id="course" required></select>
+      <label for="standard-search">Find a standard by code or words</label>
+      <div class="search-row"><input id="standard-search" placeholder="For example: 6.RP.2 or unit rate"><button id="search" type="button">Search</button></div>
+      <p class="small">Select one to three standards. Read the source text before selecting.</p>
+      <div id="selected-standards" class="selected" aria-live="polite"></div>
+      <div id="standards" class="standard-list" aria-label="Standard search results"></div>
+      <label for="topic">Topic</label><input id="topic" required maxlength="300" placeholder="For example: interpreting unit rates">
+      <label for="intention">What should students learn or do?</label>
+      <textarea id="intention" required rows="3" maxlength="3000" placeholder="Describe the learning you want and what matters in this lesson."></textarea>
+      <div class="form-grid">
+        <div><label for="minutes">Minutes per session</label><input id="minutes" type="number" min="1" max="600" value="45"></div>
+        <div><label for="session-count">Number of sessions</label><input id="session-count" type="number" min="1" max="30" value="1"></div>
+      </div>
+      <label for="scope">Deliverable</label><select id="scope"><option value="single_lesson">Single lesson</option><option value="activity">Activity</option><option value="assessment">Assessment</option><option value="adaptation_critique">Adaptation or critique</option><option value="unit_outline">Unit outline</option></select>
+      <details><summary>Classroom profile and access needs</summary>
+        <label for="prior-knowledge">Prior knowledge</label><textarea id="prior-knowledge" rows="2" maxlength="1000"></textarea>
+        <label for="access-needs">Access needs (one per line)</label><textarea id="access-needs" rows="2" maxlength="1500"></textarea>
+        <label for="languages">Stated languages (comma separated)</label><input id="languages" maxlength="200" placeholder="Leave blank if unknown">
+      </details>
+      <details><summary>Materials and resource constraints</summary>
+        <label for="available">Available materials (one per line)</label><textarea id="available" rows="2" maxlength="1000"></textarea>
+        <label for="unavailable">Unavailable materials (one per line)</label><textarea id="unavailable" rows="2" maxlength="1000"></textarea>
+        <label for="constraints">Other constraints (one per line)</label><textarea id="constraints" rows="2" maxlength="1000"></textarea>
+      </details>
+      <details><summary>Community assets and cultural wealth (optional)</summary>
+        <p class="small">Supply an asset if you want to use it. Leaving this blank does not mean the community has no assets.</p>
+        <label for="asset-origin">Asset origin</label><select id="asset-origin"><option value="synthetic_scenario">Fictional asset</option><option value="retrieved_source">Public documented asset</option><option value="developer_authored">My contributed material</option></select>
+        <label for="asset">Asset description or data</label><textarea id="asset" rows="3" maxlength="2000"></textarea>
+        <label for="asset-source">Source or attribution</label><input id="asset-source" maxlength="500" placeholder="Public source URL or credit, if applicable">
+        <p class="small">Supply material you can use for lesson generation. It will not be authorized for model training. Public facts do not establish a community's values or preferences.</p>
+      </details>
+      <details><summary>Research grounding</summary>
+        <p class="small">CAST UDL 3.0 guidance is supplied with each draft. Framework guidance does not establish classroom effectiveness.</p>
+        <label for="research-preferences">Additional design preferences</label><textarea id="research-preferences" rows="2" maxlength="1000"></textarea>
+      </details>
+      <details><summary>Seed lesson (optional)</summary>
+        <label for="seed">Permitted lesson excerpt to adapt</label><textarea id="seed" rows="3" maxlength="3000"></textarea>
+        <label for="seed-source">Source and rights description</label><input id="seed-source" maxlength="500">
+      </details>
+      <details><summary>Assessment preference</summary>
+        <label for="assessment-purpose">Purpose</label><select id="assessment-purpose"><option value="formative">Formative</option><option value="summative">Summative</option><option value="both">Both</option></select>
+        <label for="assessment-modes">Response modes (one per line)</label><textarea id="assessment-modes" rows="2" maxlength="500" placeholder="For example: individual exit check"></textarea>
+        <label for="assessment-evidence">Evidence of learning to look for</label><textarea id="assessment-evidence" rows="2" maxlength="1000"></textarea>
+      </details>
+      <label for="planning-model">Local model</label><select id="planning-model"><option value="">Checking Ollama…</option></select>
+      <p id="model-status" class="small"></p>
+      <div class="form-actions"><button id="save-context" type="button">Save context</button><button id="generate" type="submit" class="primary">Generate lesson</button></div>
+      <p class="small">Context, evidence, responses and edits are saved locally. These runs are excluded from training by default.</p>
+    </form>
+    <p id="planning-status" role="status" aria-live="polite"></p>
+  </section>
+  <section class="lesson-panel" aria-labelledby="lesson-title">
+    <div class="section-heading"><h2 id="lesson-title">Lesson draft</h2><select id="history" aria-label="Saved generations"><option value="">No saved generations</option></select></div>
+    <p id="empty-draft">Choose a standard and enter your planning intention. Your draft, evidence and validation findings will appear here.</p>
+    <div id="validation" aria-live="polite"></div>
+    <div id="lesson"></div>
+    <div id="edit-actions" hidden>
+      <p class="small">Edit the wording below and save a revision. To change the time, resources or learning requirements, update the planning context and generate again.</p>
+      <button id="save-revision" type="button">Save revision</button>
+      <button id="download" type="button">Download lesson text</button>
+    </div>
+    <details id="evidence-panel" hidden><summary>Source evidence for this draft</summary><div id="evidence"></div></details>
+  </section>
+</main>
+<script type="module" src="/planner.js"></script>
+</body>
+</html>
